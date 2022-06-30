@@ -37,7 +37,8 @@ def get_config(config=None):
     base = ['service', 'event-handler', 'event']
     config = conf.get_config_dict(base,
                                   get_first_key=True,
-                                  no_tag_node_value_mangle=True)
+                                  no_tag_node_value_mangle=True,
+                                  key_mangling=('-', '_'))
 
     return config
 
