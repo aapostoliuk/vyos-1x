@@ -48,9 +48,9 @@ def vici_get_ipsec_uniqueid(conn, src_nbma, dst_nbma):
 def vici_ike_terminate(ikeid):
     try:
         session = vici.Session()
-        messages = session.terminate({'ike-id': ikeid, 'timeout': '-1'})
+        logs = session.terminate({'ike-id': ikeid, 'timeout': '-1'})
         logger.info("Tunnel id %s was terminated", ikeid)
-        for message in messages:
+        for log in logs:
             message = log['msg'].decode('ascii')
             print('INIT LOG:', message)
         return True
