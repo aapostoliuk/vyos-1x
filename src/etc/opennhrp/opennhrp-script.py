@@ -18,62 +18,103 @@ import os
 import re
 import sys
 import vici
-import logging
+# import logging
 
-from systemd.journal import JournalHandler
+# from systemd.journal import JournalHandler
 from json import loads
+from vyos.logger import getLogger
 
 from vyos.util import cmd
 from vyos.util import process_named_running
-from collections import OrderedDict
 
 NHRP_CONFIG = "/run/opennhrp/opennhrp.conf"
 
-def vici_get_ipsec_uniqueid(conn, src_nbma, dst_nbma):
-    try:
-        session = vici.Session()
-        sases = session.list_sas({'ike': conn})
-        print('OK')
-        for sas in sases:
-            if sas[conn]["local-host"].decode('ascii') == src_nbma  \
-                    and sas[conn]["remote-host"].decode('ascii') == dst_nbma:
-                logger.info('Terminating tunnel id: %s', sas[conn]["uniqueid"].decode('ascii'))
-                return sas[conn]["uniqueid"].decode('ascii')
-        logger.info('Cannot find dmvpn ipsec tunnel src_nbma %s dst_nbma %s', src_nbma, dst_nbma)
-        return '0'
-    except:
+
+def vici_get_ipsec_uniqueid(conn: str, src_nbma: str, dst_nbma: str) -> list:
+    """ Find and return IKE SAs by src nbma and dst nbma
+
+    Args:
+        conn (str):
+        src_nbma (str):
+        dst_nbma (str):
+
+    Returns: list
+
+    """
+    if conn and src_nbma and dst_nbma:
+        try:
+            session = vici.Session()
+            list_ikeid = []
+            list_sa = session.list_sas({'ike': conn})
+            print('OK')
+            for sa in list_sa:
+                if sa[conn]["local-host"].decode('ascii') == src_nbma \
+                        and sa[conn]["remote-host"].decode('ascii') == dst_nbma:
+                    list_ikeid.append(sa[conn]["uniqueid"].decode('ascii'))
+            return list_ikeid
+        except Exception as e:
+            print(f'Terminated {e}')
+            return []
+    else:
         print('Terminated')
-        return None
+        return []
 
-def vici_ike_terminate(ikeid):
-    try:
-        session = vici.Session()
-        logs = session.terminate({'ike-id': ikeid, 'timeout': '-1'})
-        logger.info("Tunnel id %s was terminated", ikeid)
-        for log in logs:
-            message = log['msg'].decode('ascii')
-            print('INIT LOG:', message)
-        return True
-    except:
-        logger.info("Tunnel id %s not terminated", ikeid)
-        return None
 
-def parse_type_ipsec(interface):
-    with open(NHRP_CONFIG, 'r') as f:
-        lines = f.readlines()
-        match = rf'^interface {interface} #(hub|spoke)(?:\s([\w-]+))?$'
-        for line in lines:
-            m = re.match(match, line)
-            if m:
-                return m[1], m[2]
-    return None, None
+def vici_ike_terminate(list_ikeid: list) -> bool:
+    """ Terminating IKE SAs by list of IKE IDs
+
+    Args:
+        list_ikeid (list):
+
+    Returns: bool
+
+    """
+    if list:
+        try:
+            session = vici.Session()
+            for ikeid in list_ikeid:
+                logs = session.terminate({'ike-id': ikeid, 'timeout': '-1'})
+                logger.info("Tunnel id %s was terminated", ikeid)
+                for log in logs:
+                    message = log['msg'].decode('ascii')
+                    print('INIT LOG:', message)
+            return True
+        except Exception as err:
+            logger.info("Tunnel id %s not terminated", list_ikeid)
+            print(f'{err}')
+            return False
+    else:
+        logger.info("Nothing to terminate", list_ikeid)
+        return False
+
+
+def parse_type_ipsec(interface: str) -> tuple[str, str]:
+    """ Get DMVPN Type and NHRP Profile
+
+    Args:
+        interface (str):
+
+    Returns: tuple[str,str]
+
+    """
+    if interface:
+        with open(NHRP_CONFIG, 'r') as f:
+            lines = f.readlines()
+            match = rf'^interface {interface} #(hub|spoke)(?:\s([\w-]+))?$'
+            for line in lines:
+                m = re.match(match, line)
+                if m:
+                    return m[1], m[2]
+        return '', ''
+    else:
+        return '', ''
 
 
 def add_peer_route(nbma_src: str, nbma_dst: str, mtu: str) -> None:
     """Add a route to a NBMA peer
 
     Args:
-        nmba_src (str): a local IP address
+        nbma_src (str): a local IP address
         nbma_dst (str): a remote IP address
         mtu (str): a MTU for a route
     """
@@ -112,7 +153,20 @@ def add_peer_route(nbma_src: str, nbma_dst: str, mtu: str) -> None:
                     {err}')
 
 
-def vici_initiate(conn, child_sa, src_addr, dest_addr):
+def vici_initiate(conn: str, child_sa: str, src_addr: str, dest_addr: str) -> bool:
+    """ Create IKE and IPSEC SAs
+
+    Args:
+        conn (str):
+        child_sa (str):
+        src_addr (str):
+        dest_addr (str):
+
+    Returns: bool
+
+    """
+    logger.info('Try to initiate connection %s with child sas %s src_addr:%s dst_addr:%s', conn, child_sa, src_addr,
+                dest_addr)
     try:
         session = vici.Session()
         logs = session.initiate({
@@ -126,100 +180,152 @@ def vici_initiate(conn, child_sa, src_addr, dest_addr):
             message = log['msg'].decode('ascii')
             print('INIT LOG:', message)
         return True
-    except:
-        return None
-
-
-def vici_terminate(conn, child_sa, src_addr, dest_addr):
-    ikeid = vici_get_ipsec_uniqueid(conn,src_addr,dest_addr)
-    if ikeid is None:
-        return None
-    elif ikeid == '0':
-        logger.info('Nothing terminate')
+    except Exception as err:
+        print(f'Unable to initiate connection {err}')
         return False
+
+
+def vici_terminate(conn: str, src_addr: str, dest_addr: str) -> None:
+    """ Find and terminate Ike SAs by src nbma and dst nbma.
+
+    Args:
+        conn (str): _description_
+        src_addr (str): _description_
+        dest_addr (str): _description_
+    """
+    ikeid_list = vici_get_ipsec_uniqueid(conn, src_addr, dest_addr)
+
+    if not ikeid_list:
+        logger.info('Nothing terminate')
     else:
-        return vici_ike_terminate(ikeid)
+        vici_ike_terminate(ikeid_list)
 
-def iface_up(interface):
+
+def iface_up(interface: str) -> None:
+    """ Interface UP
+
+    Args:
+        interface (str):
+    """
     logger.info('iface_up %s', interface)
+    if interface:
+        try:
+            cmd(f'sudo ip route flush proto 42 dev {interface}')
+            cmd(f'sudo ip neigh flush dev {interface}')
+        except Exception as err:
+            print(f'Unable to flush route on interface "{interface}": \
+                    {err}')
 
-    cmd(f'sudo ip route flush proto 42 dev {interface}')
-    cmd(f'sudo ip neigh flush dev {interface}')
 
+def peer_up(dmvpn_type: str, conn: str) -> None:
+    """ NHRP peer UP functions
 
-def peer_up(dmvpn_type, conn):
-    # src_addr = os.getenv('NHRP_SRCADDR')
+    Args:
+        dmvpn_type (str):
+        conn (str):
+    """
     src_nbma = os.getenv('NHRP_SRCNBMA')
-    # dest_addr = os.getenv('NHRP_DESTADDR')
     dest_nbma = os.getenv('NHRP_DESTNBMA')
     dest_mtu = os.getenv('NHRP_DESTMTU')
-    logger.info('peer_up dmvpn_type=%s conn=%s src_nbma=%s dest_nbma=%s', dmvpn_type, conn, src_nbma, dest_nbma)
+    if (src_nbma is not None) and (dest_nbma is not None):
+        logger.info('peer_up dmvpn_type=%s conn=%s src_nbma=%s dest_nbma=%s', dmvpn_type, conn, src_nbma, dest_nbma)
+        if dest_mtu:
+            add_peer_route(src_nbma, dest_nbma, dest_mtu)
+        if conn and dmvpn_type == 'spoke' and process_named_running('charon'):
+            logger.info('Start terminate tunnel')
+            vici_terminate(conn, src_nbma, dest_nbma)
+            logger.info('Start initiate new tunnel')
+            vici_initiate(conn, 'dmvpn', src_nbma, dest_nbma)
+    else:
+        logger.info('Can not get NHRP NBMA addresses')
 
-    if dest_mtu:
-        add_peer_route(src_nbma, dest_nbma, dest_mtu)
 
-    if conn and dmvpn_type == 'spoke' and process_named_running('charon'):
-        logger.info('Start terminate tunnel')
-        vici_terminate(conn, 'dmvpn', src_nbma, dest_nbma)
-        logger.info('Start initiate new tunnel')
-        vici_initiate(conn, 'dmvpn', src_nbma, dest_nbma)
-    
+def peer_down(dmvpn_type: str, conn: str) -> None:
+    """ NHRP Peer Down functions
 
-
-def peer_down(dmvpn_type, conn):
+    Args:
+        dmvpn_type (str):
+        conn (str):
+    """
     src_nbma = os.getenv('NHRP_SRCNBMA')
     dest_nbma = os.getenv('NHRP_DESTNBMA')
-    logger.info('peer_down type=%s conn=%s src_nbma=%s dest_nbma=%s', dmvpn_type, conn, src_sbma, dest_nbma)
+    if (src_nbma is not None) and (dest_nbma is not None):
+        logger.info('peer_down type=%s conn=%s src_nbma=%s dest_nbma=%s', dmvpn_type, conn, src_nbma, dest_nbma)
+        if conn and dmvpn_type == 'spoke' and process_named_running('charon'):
+            vici_terminate(conn, src_nbma, dest_nbma)
+        try:
+            cmd(f'sudo ip route del {dest_nbma} src {src_nbma} proto 42')
+        except Exception as err:
+            print(f'Unable to del route {err}')
+    else:
+        logger.info('Can not get NHRP NBMA addresses')
 
-    if conn and dmvpn_type == 'spoke' and process_named_running('charon'):
-        vici_terminate(conn, 'dmvpn', src_nbma, dest_nbma)
 
-    cmd(f'sudo ip route del {dest_nbma} src {src_nbma} proto 42')
+def route_up(interface: str) -> None:
+    """ Route UP
 
-
-def route_up(interface):
+    Args:
+        interface (str):
+    """
     dest_addr = os.getenv('NHRP_DESTADDR')
     dest_prefix = os.getenv('NHRP_DESTPREFIX')
     next_hop = os.getenv('NHRP_NEXTHOP')
-    logger.info('route_up dest_prefix=%s dest_addr=%s next_hop=%s interface=%s', dest_prefix, dest_addr, next_hop, interface)
+    if (dest_addr is not None) and (dest_prefix is not None) and (next_hop is not None):
+        logger.info('route_up dest_prefix=%s dest_addr=%s next_hop=%s interface=%s', dest_prefix, dest_addr, next_hop,
+                    interface)
+        try:
+            cmd(f'sudo ip route replace {dest_addr}/{dest_prefix} proto 42 \
+                    via {next_hop} dev {interface}')
+            cmd('sudo ip route flush cache')
+        except Exception as err:
+            print(f'Unable replace or flush route {err}')
+    else:
+        logger.info('Can not get NHRP NBMA addresses or next_hop')
 
-    cmd(f'sudo ip route replace {dest_addr}/{dest_prefix} proto 42 \
-        via {next_hop} dev {interface}')
-    cmd('sudo ip route flush cache')
 
+def route_down(interface: str) -> None:
+    """Route Down
 
-def route_down(interface):
+    Args:
+        interface (str):
+    """
     dest_addr = os.getenv('NHRP_DESTADDR')
     dest_prefix = os.getenv('NHRP_DESTPREFIX')
-    logging.info('route_down dest_prefix=%s dest_addr=%s interface=%s', dest_prefix, dest_addr, interface)
+    if (dest_addr is not None) and (dest_prefix is not None):
+        logger.info('route_down dest_prefix=%s dest_addr=%s interface=%s', dest_prefix, dest_addr, interface)
+        try:
+            cmd(f'sudo ip route del {dest_addr}/{dest_prefix} proto 42')
+            cmd('sudo ip route flush cache')
+        except Exception as err:
+            print(f'Unable delete or flush route {err}')
+    else:
+        logger.info('Can not get NHRP NBMA address or prefix')
 
-    cmd(f'sudo ip route del {dest_addr}/{dest_prefix} proto 42')
-    cmd('sudo ip route flush cache')
 
 if __name__ == '__main__':
     action = sys.argv[1]
+    logger = getLogger('opennhrp-script', syslog=True)
     interface = os.getenv('NHRP_INTERFACE')
-    dmvpn_type, profile_name = parse_type_ipsec(interface)
-
-    dmvpn_conn = None
-
-
-    logger = logging.getLogger('opennhrp_script')
-    logger.addHandler(JournalHandler())
-    logger.setLevel(logging.INFO)
-
-    if profile_name:
-        dmvpn_conn = f'dmvpn-{profile_name}-{interface}'
-
-    if action == 'interface-up':
-        iface_up(interface)
-    elif action == 'peer-register':
-        pass
-    elif action == 'peer-up':
-        peer_up(dmvpn_type, dmvpn_conn)
-    elif action == 'peer-down':
-        peer_down(dmvpn_type, dmvpn_conn)
-    elif action == 'route-up':
-        route_up(interface)
-    elif action == 'route-down':
-        route_down(interface)
+    logger.info('ARGS: %s, OS ENV: %s', sys.argv, os.environ)
+    if interface is not None:
+        dmvpn_type, profile_name = parse_type_ipsec(interface)
+        dmvpn_conn = None
+        if dmvpn_type:
+            if profile_name:
+                dmvpn_conn = f'dmvpn-{profile_name}-{interface}'
+            if action == 'interface-up':
+                iface_up(interface)
+            elif action == 'peer-register':
+                pass
+            elif action == 'peer-up':
+                peer_up(dmvpn_type, dmvpn_conn)
+            elif action == 'peer-down':
+                peer_down(dmvpn_type, dmvpn_conn)
+            elif action == 'route-up':
+                route_up(interface)
+            elif action == 'route-down':
+                route_down(interface)
+        else:
+            logger.info('Can not get DMVPN TYPE')
+    else:
+        logger.info('Can not get NHRP interface')
