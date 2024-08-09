@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (C) 2023 VyOS maintainers and contributors
+# Copyright (C) 2023-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -61,7 +61,7 @@ def _get_formatted_dict(output_string: str) -> dict:
 
 def show_interface(raw: bool):
     """
-    Command 'show nhrp interface'
+    Command 'show ip nhrp interface'
     :param raw: if API
     :type raw: bool
     """
@@ -74,21 +74,78 @@ def show_interface(raw: bool):
     else:
         return _get_formatted_output(interface_dict)
 
+def show_neighbors(raw: bool):
+    from vyos.utils.process import cmd
+    from vyos.utils.dict import dict_to_list
 
-def show_tunnel(raw: bool):
+    if raw:
+        from json import loads
+
+        output = cmd(f"vtysh -c 'show bgp neighbors json'").strip()
+        d = loads(output)
+        return dict_to_list(d, save_key_to="neighbor")
+    else:
+        output = cmd(f"vtysh -c 'show bgp neighbors'")
+        return output
+
+
+
+def show_cashe(raw: bool):
     """
-    Command 'show nhrp tunnel'
+    Command 'show ip nhrp cash'
     :param raw: if API
     :type raw: bool
     """
-    if not process_named_running('opennhrp'):
-        raise vyos.opmode.UnconfiguredSubsystem('OpenNHRP is not running.')
-    tunnel_string: str = cmd('sudo opennhrpctl show')
-    tunnel_dict: list = _get_formatted_dict(tunnel_string)
+    from vyos.utils.process import cmd
+    from vyos.utils.dict import dict_to_list
+
     if raw:
-        return tunnel_dict
+        from json import loads
+
+        output = cmd(f"vtysh -c 'show ip nhrp cache json'").strip()
+        d = loads(output)
+        return dict_to_list(d, save_key_to="neighbor")
     else:
-        return _get_formatted_output(tunnel_dict)
+        output = cmd(f"vtysh -c 'show ip nhrp cache'")
+        return output
+
+def show_shorcut(raw: bool):
+    """
+    Command 'show ip nhrp shorcut'
+    :param raw: if API
+    :type raw: bool
+    """
+    from vyos.utils.process import cmd
+    from vyos.utils.dict import dict_to_list
+
+    if raw:
+        from json import loads
+
+        output = cmd(f"vtysh -c 'show ip nhrp shortcut json'").strip()
+        d = loads(output)
+        return dict_to_list(d, save_key_to="neighbor")
+    else:
+        output = cmd(f"vtysh -c 'show ip nhrp shortcut'")
+        return output
+
+def show_nhs(raw: bool):
+    """
+    Command 'show nhrp nhs'
+    :param raw: if API
+    :type raw: bool
+    """
+    from vyos.utils.process import cmd
+    from vyos.utils.dict import dict_to_list
+
+    if raw:
+        from json import loads
+
+        output = cmd(f"vtysh -c 'show ip nhrp nhs json'").strip()
+        d = loads(output)
+        return dict_to_list(d, save_key_to="neighbor")
+    else:
+        output = cmd(f"vtysh -c 'show ip nhrp nhs'")
+        return output
 
 
 if __name__ == '__main__':

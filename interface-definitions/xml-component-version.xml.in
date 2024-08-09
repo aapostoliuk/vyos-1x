@@ -27,6 +27,7 @@
   #include <include/version/monitoring-version.xml.i>
   #include <include/version/nat66-version.xml.i>
   #include <include/version/nat-version.xml.i>
+  #include <include/version/nhrp-version.xml.i>
   #include <include/version/ntp-version.xml.i>
   #include <include/version/openconnect-version.xml.i>
   #include <include/version/ospf-version.xml.i>

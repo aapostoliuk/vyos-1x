@@ -14,18 +14,21 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-import os
-
 from vyos.config import Config
 from vyos.configdict import node_changed
+from vyos.template import render_to_string
 from vyos.template import render
 from vyos.utils.process import run
+from vyos.utils.dict import dict_search
 from vyos import ConfigError
 from vyos import airbag
+from vyos import frr
 airbag.enable()
 
-opennhrp_conf = '/run/opennhrp/opennhrp.conf'
+nflog_redirect = 1
+nflog_multicast = 2
 nhrp_nftables_conf = '/run/nftables_nhrp.conf'
+
 
 def get_config(config=None):
     if config:
@@ -36,10 +39,21 @@ def get_config(config=None):
 
     nhrp = conf.get_config_dict(base, key_mangling=('-', '_'),
                                 get_first_key=True, no_tag_node_value_mangle=True)
-    nhrp['del_tunnels'] = node_changed(conf, base + ['tunnel'])
+    interfaces_removed = node_changed(conf, base + ['tunnel'])
+    if interfaces_removed:
+        nhrp['interface_removed'] = list(interfaces_removed)
 
     if not conf.exists(base):
+        # If nhrp instance is deleted then mark it
+        nhrp.update({'deleted' : ''})
         return nhrp
+    nhrp = conf.merge_defaults(nhrp, recursive=True)
+
+    for intf, intf_config in nhrp['tunnel'].items():
+        if 'multicast' in intf_config:
+            nhrp['multicast'] = nflog_multicast
+        if 'redirect' in intf_config:
+            nhrp['redirect'] = nflog_redirect
 
     nhrp['if_tunnel'] = conf.get_config_dict(['interfaces', 'tunnel'], key_mangling=('-', '_'),
                                 get_first_key=True, no_tag_node_value_mangle=True)
@@ -54,11 +68,14 @@ def get_config(config=None):
             if isinstance(interfaces, str):
                 interfaces = [interfaces]
             for interface in interfaces:
-                nhrp['profile_map'][interface] = name
-
+                if dict_search(f'tunnel.{interface}',nhrp):
+                    nhrp['tunnel'][interface]['security_profile'] = name
     return nhrp
 
+
 def verify(nhrp):
+    if not nhrp or 'deleted' in nhrp:
+        return None
     if 'tunnel' in nhrp:
         for name, nhrp_conf in nhrp['tunnel'].items():
             if not nhrp['if_tunnel'] or name not in nhrp['if_tunnel']:
@@ -72,36 +89,54 @@ def verify(nhrp):
             if 'remote' in tunnel_conf:
                 raise ConfigError(f'Tunnel "{name}" cannot have a remote address defined')
 
-            if 'map' in nhrp_conf:
-                for map_name, map_conf in nhrp_conf['map'].items():
-                    if 'nbma_address' not in map_conf:
+            map_tunnelip = dict_search('map.tunnel_ip', nhrp_conf)
+            if map_tunnelip:
+                for map_name, map_conf in map_tunnelip.items():
+                    if 'nbma' not in map_conf:
                         raise ConfigError(f'nbma-address missing on map {map_name} on tunnel {name}')
-
-            if 'dynamic_map' in nhrp_conf:
-                for map_name, map_conf in nhrp_conf['dynamic_map'].items():
-                    if 'nbma_domain_name' not in map_conf:
-                        raise ConfigError(f'nbma-domain-name missing on dynamic-map {map_name} on tunnel {name}')
+            map_tunnelip = dict_search('nhs.tunnel_ip', nhrp_conf)
+            if map_tunnelip:
+                for map_name, map_conf in map_tunnelip.items():
+                    if 'nbma' not in map_conf:
+                        raise ConfigError(f'nbma-address missing on map nhs {map_name} on tunnel {name}')
     return None
+
 
 def generate(nhrp):
-    if not os.path.exists(nhrp_nftables_conf):
-        nhrp['first_install'] = True
-
-    render(opennhrp_conf, 'nhrp/opennhrp.conf.j2', nhrp)
-    render(nhrp_nftables_conf, 'nhrp/nftables.conf.j2', nhrp)
+    if not nhrp or 'deleted' in nhrp:
+        return None
+    render(nhrp_nftables_conf, 'frr/nhrpd_nftables.conf.j2', nhrp)
+    nhrp['frr_nhrpd_config'] = render_to_string('frr/nhrpd.frr.j2', nhrp)
     return None
 
+
 def apply(nhrp):
+    nhrp_daemon = 'nhrpd'
+
     nft_rc = run(f'nft --file {nhrp_nftables_conf}')
     if nft_rc != 0:
         raise ConfigError('Failed to apply NHRP tunnel firewall rules')
 
-    action = 'restart' if nhrp and 'tunnel' in nhrp else 'stop'
-    service_rc = run(f'systemctl {action} opennhrp.service')
-    if service_rc != 0:
-        raise ConfigError(f'Failed to {action} the NHRP service')
+    # Save original configuration prior to starting any commit actions
+    frr_cfg = frr.FRRConfig()
+
+    frr_cfg.load_configuration(nhrp_daemon)
+
+    frr_cfg.modify_section(r'^nhrp .*')
+
+    for key in ['tunnel', 'interface_removed']:
+        if key not in nhrp:
+            continue
+        for interface in nhrp[key]:
+            frr_cfg.modify_section(f'^interface {interface}', stop_pattern='^exit', remove_stop_mark=True)
+
+    if 'frr_nhrpd_config' in nhrp:
+        frr_cfg.add_before(frr.default_add_before, nhrp['frr_nhrpd_config'])
+
+    frr_cfg.commit_configuration(nhrp_daemon)
 
     return None
+
 
 if __name__ == '__main__':
     try:
